@@ -97,11 +97,16 @@ void foc_openloop_velocity(float target_velocity)
     if (g_shaft_angle > 2 * PI) g_shaft_angle -= 2 * PI;
     if (g_shaft_angle < 0) g_shaft_angle += 2 * PI;
 
-    // Uq = Vbus/3
-    float Uq = g_vbus / 3.0f;
-
     // 电角度 = 机械角 × 极对数
     float angle_el = g_shaft_angle * 7;
+
+    // 目标速度为0时，不输出电压，让电机自由停止
+    float Uq;
+    if (fabsf(target_velocity) < 0.01f) {
+        Uq = 0.0f;
+    } else {
+        Uq = g_vbus / 3.0f;
+    }
 
     // 调用已有的 foc_set_voltage
     foc_set_voltage(Uq, angle_el);
@@ -138,8 +143,8 @@ float foc_calc_velocity(float angle)
     // 原始速度
     float vel_raw = d_angle / dt;
 
-    // 低通滤波: 0.9 * 上次 + 0.1 * 本次
-    g_velocity_lpf = 0.9f * g_velocity_lpf + 0.1f * vel_raw;
+        // 低通滤波: 0.95 * 上次 + 0.05 * 本次 (加强滤波，抑制编码器量化噪声)
+    g_velocity_lpf = 0.95f * g_velocity_lpf + 0.05f * vel_raw;
 
     // 更新状态
     g_last_angle = angle;

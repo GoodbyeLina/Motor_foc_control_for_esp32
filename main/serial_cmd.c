@@ -65,8 +65,11 @@ void serial_print_help(void)
 
 uint8_t serial_cmd_process(serial_cmd_result_t *result)
 {
-    // 先把结果设为默认（无新命令时保持原值）
+        // 先把结果设为默认（无新命令时保持原值）
     *result = g_default_result;
+
+    // 每次处理命令前先清除 stop 标志，防止卡死
+    g_default_result.stop = 0;
 
     // 从UART读取一行数据
     uint8_t data[RD_BUF_SIZE];
@@ -113,12 +116,12 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
         g_default_result.parsed = 1;
         printf("  → 目标电流已设为 %.3f A\r\n", value);
     }
-    else if (strcmp(cmd, "s") == 0) {
-        g_default_result.stop = 1;
-        g_default_result.parsed = 1;
-        printf("  → 电机已停止\r\n");
-    }
-    else if (strcmp(cmd, "mode") == 0 && n >= 2) {
+        else if (strcmp(cmd, "s") == 0) {
+            g_default_result.stop = 1;
+            g_default_result.parsed = 1;
+            printf("  → 电机已停止\r\n");
+        }
+        else if (strcmp(cmd, "mode") == 0 && n >= 2) {
         int mode = (int)value;
         if (mode >= 0 && mode <= 2) {
             g_default_result.control_mode = (ctrl_mode_t)mode;
