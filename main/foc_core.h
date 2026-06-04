@@ -11,9 +11,11 @@
 void foc_core_init(float power_supply);
 
 /**
- * 开环控制：设置电压和角度，输出三相PWM
- * @param Uq        q轴电压 (V)，控制电机力矩/速度，范围 -Vbus/2 ~ +Vbus/2
+ * SVPWM 输出：设置 q 轴电压和电角度，输出三相 PWM
+ * @param Uq        q轴电压 (V)，控制电机力矩/速度，范围 -Vbus/√3 ~ +Vbus/√3
  * @param angle_el  电角度 (rad)
+ * @note 内部使用 7 段式 SVPWM（零序分量注入，Vbus/√3 ≈ 0.577·Vbus），
+ *       相比 SPWM（Vbus/2 = 0.5·Vbus）母线电压利用率提高 ~15.4%
  */
 void foc_set_voltage(float Uq, float angle_el);
 
@@ -23,6 +25,8 @@ void foc_set_voltage(float Uq, float angle_el);
  * @param Ib        B相电流 (A)
  * @param angle_el  电角度 (rad)
  * @return          Iq 电流值 (A)
+ * @note Clark: Iα=Ia, Iβ=(Ia+2·Ib)/√3
+ *       Park:  Iq = -Iα·sinθ + Iβ·cosθ
  */
 float foc_calc_iq(float Ia, float Ib, float angle_el);
 

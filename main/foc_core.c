@@ -15,15 +15,66 @@ void foc_core_init(float power_supply)
     ESP_LOGI(TAG, "FOC initialized, Vbus = %.1fV", g_vbus);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void foc_set_voltage(float Uq, float angle_el)
 {
-    // ---- 1. 限制 Uq 不超过 Vbus/2 ----
-    // 用 if 或 fminf/fmaxf
-    // Uq 范围应该在 -Vbus/2 ~ +Vbus/2 之间
-    if(Uq > g_vbus / 2){
-        Uq = g_vbus / 2;
-    } else if(Uq < -g_vbus / 2){
-        Uq = -g_vbus / 2;
+    // ---- 1. 限制 Uq 不超过 Vbus/√3 (SVPWM最大调制比) ----
+    // SVPWM 通过零序分量注入，母线电压利用率比 SPWM 高 ~15%
+    // 最大相电压幅值 = Vbus/√3 ≈ 0.577*Vbus (SPWM仅 Vbus/2 = 0.5*Vbus)
+    float Uq_max = g_vbus / sqrtf(3);
+    if (Uq > Uq_max) {
+        Uq = Uq_max;
+    } else if (Uq < -Uq_max) {
+        Uq = -Uq_max;
     }
 
     // 电角度归一化到 0~2π
@@ -34,36 +85,45 @@ void foc_set_voltage(float Uq, float angle_el)
     float Ualpha = -Uq * sinf(angle_el);
     float Ubeta  =  Uq * cosf(angle_el);
 
-    // ---- 3. 逆Clarke变换 → 三相电压 ----
-    float Ua = Ualpha + g_vbus / 2;
-    float Ub = (-Ualpha + sqrtf(3)* Ubeta) / 2 +g_vbus / 2;
-    float Uc = (-Ualpha - sqrtf(3)* Ubeta) / 2 +g_vbus / 2;
+    // ---- 3. SVPWM：7段式对称PWM（零序分量注入） ----
+    //
+    // 核心思想：
+    //   SPWM 固定加 Vbus/2 偏置 → 母线利用率低
+    //   SVPWM 动态计算零序分量 → 自动插入零矢量，PWM 中心对齐
+    //
+    // 公式推导:   raw_a = Ualpha / Vbus
+    //             raw_b = (-Ualpha + √3·Ubeta) / (2·Vbus)
+    //             raw_c = (-Ualpha - √3·Ubeta) / (2·Vbus)
+    //             t_offset = 0.5 - 0.5·(min(raw) + max(raw))
+    //             dc = raw + t_offset
 
-    // ---- 4. 限幅到 0 ~ Vbus ----
-    // 用 if 判断 + 裁剪
-    if(Ua > g_vbus){
-        Ua = g_vbus;
-    
-    } else if(Ua < 0){
-        Ua = 0;
-    }
-    if(Ub > g_vbus){
-        Ub = g_vbus;
-    
-    } else if(Ub < 0){
-        Ub = 0;
-    }
-    if(Uc > g_vbus){
-        Uc = g_vbus;
-    
-    } else if(Uc < 0){
-        Uc = 0;
-    }
+    float vbus = g_vbus;
 
-    // ---- 5. 计算占空比并输出PWM ----
-    float dc_a = Ua / g_vbus;
-    float dc_b = Ub / g_vbus;
-    float dc_c = Uc / g_vbus;
+    // 3a. 三相原始占空比（相对 0 电平，范围约 [-0.5, 0.5]）
+    float raw_a =  Ualpha / vbus;
+    float raw_b = (-Ualpha + sqrtf(3) * Ubeta) / (2.0f * vbus);
+    float raw_c = (-Ualpha - sqrtf(3) * Ubeta) / (2.0f * vbus);
+
+    // 3b. 零序分量：使三相中心对称于 0.5
+    float t_min = fminf(raw_a, fminf(raw_b, raw_c));
+    float t_max = fmaxf(raw_a, fmaxf(raw_b, raw_c));
+    float t_offset = 0.5f - 0.5f * (t_min + t_max);
+
+    // 3c. 注入零序分量 → 最终占空比 [0, 1]
+    float dc_a = raw_a + t_offset;
+    float dc_b = raw_b + t_offset;
+    float dc_c = raw_c + t_offset;
+
+    // 3d. 安全钳位（理论上 SVPWM 保证在 [0,1] 内，
+    //     但浮点精度可能微幅越界）
+    if (dc_a < 0.0f) dc_a = 0.0f;
+    else if (dc_a > 1.0f) dc_a = 1.0f;
+    if (dc_b < 0.0f) dc_b = 0.0f;
+    else if (dc_b > 1.0f) dc_b = 1.0f;
+    if (dc_c < 0.0f) dc_c = 0.0f;
+    else if (dc_c > 1.0f) dc_c = 1.0f;
+
+    // ---- 4. 输出 PWM ----
     ledc_pwm_set_duty(dc_a, dc_b, dc_c);
 }
 

@@ -48,6 +48,9 @@ cmake_install.cmake
 install_manifest.txt
 CTestTestfile.cmake
 
+# Local backup of SPWM version
+main_spwm/
+
 # Python environment files
 *.pyc
 *.pyo

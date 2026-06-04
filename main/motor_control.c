@@ -22,7 +22,7 @@ static const char *TAG = "motor_ctrl";
 #define PID_I    50.0f
 #define PID_D    0.0f
 #define PID_RAMP 100000.0f
-#define PID_LIMIT (VBUS / 2)
+#define PID_LIMIT (VBUS / sqrtf(3))  // SVPWM 最大调制比 ≈ 0.577*Vbus
 
 #define VEL_P     0.15f
 #define VEL_I     3.0f
