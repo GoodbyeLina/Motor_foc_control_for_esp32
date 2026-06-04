@@ -53,4 +53,8 @@ void motor_control_set_velocity_pid(float p, float i, float d, float ramp, float
  */
 void motor_control_get_velocity_pid(float *p, float *i, float *d, float *ramp, float *limit);
 
+// ========== 无感FOC调参接口 ==========
+void motor_control_set_smo_params(float Rs, float Ls, float Ke, float K_smo);
+void motor_control_set_startup_params(float I_startup, float omega_start, float omega_end);
+
 #endif

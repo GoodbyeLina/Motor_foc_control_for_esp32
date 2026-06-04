@@ -46,6 +46,7 @@ typedef enum {
     CTRL_MODE_OPENLOOP = 0,   // 开环模式
     CTRL_MODE_CURRENT = 1,    // 电流闭环
     CTRL_MODE_VELOCITY = 2,   // 速度闭环 (默认)
+    CTRL_MODE_SENSORLESS = 3,
 } ctrl_mode_t;
 
 /** 串口命令解析结果 */

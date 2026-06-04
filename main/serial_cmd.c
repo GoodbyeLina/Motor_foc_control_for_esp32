@@ -56,7 +56,7 @@ void serial_print_help(void)
     printf("  v <num>    | 设置目标速度 (rad/s)          \r\n");
     printf("  c <num>    | 设置目标电流 (A)              \r\n");
     printf("  s          | 停止电机                      \r\n");
-    printf("  mode <n>   | 切换模式: 0开环 1电流 2速度   \r\n");
+    printf("  mode <n>   | 切换模式: 0开环 1电流 2速度 3无感FOC   \r\n");
     printf("  pid        | 查看电流环 PID 参数           \r\n");
     printf("  pid <p/i/d/ramp/limit> <val>  | 设置电流环 \r\n");
         printf("  vpid       | 查看速度环 PID 参数           \r\n");
@@ -148,13 +148,13 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
             motor_test_stop();
         }
         int mode = (int)value;
-        if (mode >= 0 && mode <= 2) {
+        if (mode >= 0 && mode <= 3) {
             g_default_result.control_mode = (ctrl_mode_t)mode;
             g_default_result.parsed = 1;
-            const char *mode_names[] = {"开环", "电流闭环", "速度闭环"};
+            const char *mode_names[] = {"开环", "电流闭环", "速度闭环", "无感FOC"};
             printf("  → 已切换到 %s 模式\r\n", mode_names[mode]);
         } else {
-            printf("  → 错误: 模式必须为 0(开环) 1(电流) 2(速度)\r\n");
+            printf("  → 错误: 模式必须为 0(开环) 1(电流) 2(速度) 3(无感FOC)\r\n");
         }
     }
     // ====== 在线调参命令 ======
