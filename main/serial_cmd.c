@@ -6,6 +6,7 @@
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "motor_control.h"
 
 static const char *TAG = "serial_cmd";
 
@@ -48,17 +49,19 @@ void serial_print_help(void)
 {
     printf("\r\n");
     printf("========== DengFOC 串口命令系统 ==========\r\n");
-    printf("  命令     | 说明                            \r\n");
-    printf("----------+----------------------------------\r\n");
-    printf("  help     | 显示本帮助信息                  \r\n");
-    printf("  v <num>  | 设置目标速度 (rad/s)            \r\n");
-    printf("           | 例: v 5     → 速度 5 rad/s      \r\n");
-    printf("           | 例: v -3    → 反向 3 rad/s      \r\n");
-    printf("  c <num>  | 设置目标电流 (A)                \r\n");
-    printf("           | 例: c 0.5   → 电流 0.5A         \r\n");
-    printf("  s        | 停止电机                        \r\n");
-    printf("  mode <n> | 切换控制模式:                   \r\n");
-    printf("           |   0=开环  1=电流  2=速度(默认)   \r\n");
+    printf("  命令       | 说明                          \r\n");
+    printf("------------+--------------------------------\r\n");
+    printf("  help       | 显示本帮助信息                \r\n");
+    printf("  v <num>    | 设置目标速度 (rad/s)          \r\n");
+    printf("  c <num>    | 设置目标电流 (A)              \r\n");
+    printf("  s          | 停止电机                      \r\n");
+    printf("  mode <n>   | 切换模式: 0开环 1电流 2速度   \r\n");
+    printf("  pid        | 查看电流环 PID 参数           \r\n");
+    printf("  pid <p/i/d/ramp/limit> <val>  | 设置电流环 \r\n");
+    printf("  vpid       | 查看速度环 PID 参数           \r\n");
+    printf("  vpid <p/i/d/ramp/limit> <val> | 设置速度环 \r\n");
+    printf("  ---------- 例: pid p 2.0  设置电流环 P     \r\n");
+    printf("              例: vpid i 5.0 设置速度环 I    \r\n");
     printf("============================================\r\n");
     printf("\r\n");
 }
@@ -102,6 +105,15 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
         printf(")\r\n");
     }
 
+        // 尝试解析三字段命令: "pid p 1.5" 或 "vpid i 50"
+    char subcmd[32] = {0};
+    float val2 = 0.0f;
+    int n3 = sscanf((char *)data, "%s %s %f", cmd, subcmd, &val2);
+    // 如果三字段解析失败，回退到两字段解析
+    if (n3 < 2) {
+        // 原始解析结果保留
+    }
+
     // === 命令解析 ===
     if (strcmp(cmd, "help") == 0) {
         serial_print_help();
@@ -116,12 +128,12 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
         g_default_result.parsed = 1;
         printf("  → 目标电流已设为 %.3f A\r\n", value);
     }
-        else if (strcmp(cmd, "s") == 0) {
-            g_default_result.stop = 1;
-            g_default_result.parsed = 1;
-            printf("  → 电机已停止\r\n");
-        }
-        else if (strcmp(cmd, "mode") == 0 && n >= 2) {
+    else if (strcmp(cmd, "s") == 0) {
+        g_default_result.stop = 1;
+        g_default_result.parsed = 1;
+        printf("  → 电机已停止\r\n");
+    }
+    else if (strcmp(cmd, "mode") == 0 && n >= 2) {
         int mode = (int)value;
         if (mode >= 0 && mode <= 2) {
             g_default_result.control_mode = (ctrl_mode_t)mode;
@@ -131,6 +143,56 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
         } else {
             printf("  → 错误: 模式必须为 0(开环) 1(电流) 2(速度)\r\n");
         }
+    }
+    // ====== 在线调参命令 ======
+    else if (strcmp(cmd, "pid") == 0) {
+        if (n3 == 1) {
+            // pid → 显示参数
+            float p, i, d, ramp, limit;
+            motor_control_get_current_pid(&p, &i, &d, &ramp, &limit);
+            printf("  电流环 PID: P=%.3f  I=%.3f  D=%.3f  ramp=%.0f  limit=%.3f\r\n",
+                   p, i, d, ramp, limit);
+        } else if (n3 == 3) {
+            // pid p 1.5 → 设置
+            if (strcmp(subcmd, "p") == 0) {
+                motor_control_set_current_pid(val2, 0, 0, 0, 0);
+            } else if (strcmp(subcmd, "i") == 0) {
+                motor_control_set_current_pid(0, val2, 0, 0, 0);
+            } else if (strcmp(subcmd, "d") == 0) {
+                motor_control_set_current_pid(0, 0, val2, 0, 0);
+            } else if (strcmp(subcmd, "ramp") == 0) {
+                motor_control_set_current_pid(0, 0, 0, val2, 0);
+            } else if (strcmp(subcmd, "limit") == 0) {
+                motor_control_set_current_pid(0, 0, 0, 0, val2);
+            } else {
+                printf("  → 未知参数名 '%s'，可用: p i d ramp limit\r\n", subcmd);
+            }
+        }
+        g_default_result.parsed = 1;
+    }
+    else if (strcmp(cmd, "vpid") == 0) {
+        if (n3 == 1) {
+            // vpid → 显示参数
+            float p, i, d, ramp, limit;
+            motor_control_get_velocity_pid(&p, &i, &d, &ramp, &limit);
+            printf("  速度环 PID: P=%.3f  I=%.3f  D=%.3f  ramp=%.0f  limit=%.3f\r\n",
+                   p, i, d, ramp, limit);
+        } else if (n3 == 3) {
+            if (strcmp(subcmd, "p") == 0) {
+                motor_control_set_velocity_pid(val2, 0, 0, 0, 0);
+            } else if (strcmp(subcmd, "i") == 0) {
+                motor_control_set_velocity_pid(0, val2, 0, 0, 0);
+            } else if (strcmp(subcmd, "d") == 0) {
+                motor_control_set_velocity_pid(0, 0, val2, 0, 0);
+            } else if (strcmp(subcmd, "ramp") == 0) {
+                motor_control_set_velocity_pid(0, 0, 0, val2, 0);
+            } else if (strcmp(subcmd, "limit") == 0) {
+                motor_control_set_velocity_pid(0, 0, 0, 0, val2);
+            } else {
+                printf("  → 未知参数名 '%s'，可用: p i d ramp limit\r\n", subcmd);
+            }
+        }
+        g_default_result.parsed = 1;
     }
     else if (strlen((char *)data) > 0) {
         printf("  → 未知命令，输入 help 查看帮助\r\n");

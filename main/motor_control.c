@@ -40,6 +40,7 @@ static float s_target_cur = 0.5f;
 static float s_vel = 0.0f;
 static float s_Iq  = 0.0f;
 static float s_Uq  = 0.0f;
+static float s_current_target = 0.0f;  // 电流环的输入目标（电流环=c值，速度环=速度PID输出）
 static ctrl_mode_t s_ctrl_mode = CTRL_MODE_VELOCITY;
 
 // ==================== 公开接口 ====================
@@ -93,7 +94,8 @@ void motor_control_run(void)
             Ia = current_sense_read_a();
             Ib = current_sense_read_b();
             s_Iq = foc_calc_iq(Ia, Ib, elec_angle);
-            Uq = pid_calculate(&s_pid_current, s_target_cur - s_Iq);
+            s_current_target = s_target_cur;  // 电流环的目标就是用户设的 c 值
+            Uq = pid_calculate(&s_pid_current, s_current_target - s_Iq);
             break;
 
         case CTRL_MODE_VELOCITY:
@@ -101,8 +103,8 @@ void motor_control_run(void)
             Ia = current_sense_read_a();
             Ib = current_sense_read_b();
             s_Iq = foc_calc_iq(Ia, Ib, elec_angle);
-            float current_target = pid_calculate(&s_pid_velocity, s_target_vel - s_vel);
-            Uq = pid_calculate(&s_pid_current, current_target - s_Iq);
+            s_current_target = pid_calculate(&s_pid_velocity, s_target_vel - s_vel);  // 速度PID输出 = 电流目标
+            Uq = pid_calculate(&s_pid_current, s_current_target - s_Iq);
             break;
     }
 
@@ -112,8 +114,8 @@ void motor_control_run(void)
 
     // ⑤ 状态打印 (VOFA+ FireWater 格式, 每10次输出)
     if (s_loop_count++ % 10 == 0) {
-        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
-               s_vel, s_target_vel, s_Iq, s_Uq, elec_angle, Ia, Ib);
+        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
+               s_vel, s_target_vel, s_Iq, s_Uq, elec_angle, Ia, Ib, s_current_target);
                
     }
 }
@@ -151,3 +153,52 @@ void motor_control_stop(void)
 float motor_control_get_velocity(void) { return s_vel; }
 float motor_control_get_current(void)  { return s_Iq; }
 float motor_control_get_voltage(void)  { return s_Uq; }
+
+// ========== 在线调参实现 ==========
+
+void motor_control_set_current_pid(float p, float i, float d, float ramp, float limit)
+{
+    if (p > 0)    s_pid_current.P = p;
+    if (i > 0)    s_pid_current.I = i;
+    if (d > 0)    s_pid_current.D = d;
+    if (ramp > 0) s_pid_current.output_ramp = ramp;
+    if (limit > 0) s_pid_current.limit = limit;
+    // 重置积分状态，防止突变
+    pid_init(&s_pid_current, s_pid_current.P, s_pid_current.I, s_pid_current.D,
+             s_pid_current.output_ramp, s_pid_current.limit);
+    ESP_LOGI(TAG, "电流环 PID: P=%.3f I=%.3f D=%.3f ramp=%.0f limit=%.3f",
+             s_pid_current.P, s_pid_current.I, s_pid_current.D,
+             s_pid_current.output_ramp, s_pid_current.limit);
+}
+
+void motor_control_get_current_pid(float *p, float *i, float *d, float *ramp, float *limit)
+{
+    *p     = s_pid_current.P;
+    *i     = s_pid_current.I;
+    *d     = s_pid_current.D;
+    *ramp  = s_pid_current.output_ramp;
+    *limit = s_pid_current.limit;
+}
+
+void motor_control_set_velocity_pid(float p, float i, float d, float ramp, float limit)
+{
+    if (p > 0)    s_pid_velocity.P = p;
+    if (i > 0)    s_pid_velocity.I = i;
+    if (d > 0)    s_pid_velocity.D = d;
+    if (ramp > 0) s_pid_velocity.output_ramp = ramp;
+    if (limit > 0) s_pid_velocity.limit = limit;
+    pid_init(&s_pid_velocity, s_pid_velocity.P, s_pid_velocity.I, s_pid_velocity.D,
+             s_pid_velocity.output_ramp, s_pid_velocity.limit);
+    ESP_LOGI(TAG, "速度环 PID: P=%.3f I=%.3f D=%.3f ramp=%.0f limit=%.3f",
+             s_pid_velocity.P, s_pid_velocity.I, s_pid_velocity.D,
+             s_pid_velocity.output_ramp, s_pid_velocity.limit);
+}
+
+void motor_control_get_velocity_pid(float *p, float *i, float *d, float *ramp, float *limit)
+{
+    *p     = s_pid_velocity.P;
+    *i     = s_pid_velocity.I;
+    *d     = s_pid_velocity.D;
+    *ramp  = s_pid_velocity.output_ramp;
+    *limit = s_pid_velocity.limit;
+}

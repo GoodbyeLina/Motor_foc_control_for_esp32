@@ -31,4 +31,26 @@ float motor_control_get_velocity(void);
 float motor_control_get_current(void);
 float motor_control_get_voltage(void);
 
+// ========== 在线调参接口 ==========
+
+/**
+ * 设置电流环 PID 参数 (传0表示不修改)
+ */
+void motor_control_set_current_pid(float p, float i, float d, float ramp, float limit);
+
+/**
+ * 获取电流环 PID 参数 (通过指针传出)
+ */
+void motor_control_get_current_pid(float *p, float *i, float *d, float *ramp, float *limit);
+
+/**
+ * 设置速度环 PID 参数 (传0表示不修改)
+ */
+void motor_control_set_velocity_pid(float p, float i, float d, float ramp, float limit);
+
+/**
+ * 获取速度环 PID 参数 (通过指针传出)
+ */
+void motor_control_get_velocity_pid(float *p, float *i, float *d, float *ramp, float *limit);
+
 #endif
