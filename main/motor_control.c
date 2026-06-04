@@ -1,4 +1,5 @@
 #include "motor_control.h"
+#include "motor_test.h"
 #include "ledc_pwm.h"
 #include "foc_core.h"
 #include "as5600.h"
@@ -113,11 +114,15 @@ void motor_control_run(void)
     foc_set_voltage(Uq, elec_angle);
 
     // ⑤ 状态打印 (VOFA+ FireWater 格式, 每10次输出)
-    if (s_loop_count++ % 10 == 0) {
+    //    测试汇总表输出期间暂停，方便用户查看
+    if (s_loop_count++ % 10 == 0 && !motor_test_vofa_suppressed()) {
         printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
                s_vel, s_target_vel, s_Iq, s_Uq, elec_angle, Ia, Ib, s_current_target);
                
     }
+
+    // ⑥ 驱动测试状态机（无测试运行时立即返回）
+    motor_test_tick();
 }
 
 // ========== 串口命令接口 ==========

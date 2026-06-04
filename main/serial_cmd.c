@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "motor_control.h"
+#include "motor_test.h"
 
 static const char *TAG = "serial_cmd";
 
@@ -58,10 +59,14 @@ void serial_print_help(void)
     printf("  mode <n>   | 切换模式: 0开环 1电流 2速度   \r\n");
     printf("  pid        | 查看电流环 PID 参数           \r\n");
     printf("  pid <p/i/d/ramp/limit> <val>  | 设置电流环 \r\n");
-    printf("  vpid       | 查看速度环 PID 参数           \r\n");
+        printf("  vpid       | 查看速度环 PID 参数           \r\n");
     printf("  vpid <p/i/d/ramp/limit> <val> | 设置速度环 \r\n");
-    printf("  ---------- 例: pid p 2.0  设置电流环 P     \r\n");
-    printf("              例: vpid i 5.0 设置速度环 I    \r\n");
+    printf("  test_cur   | 电流阶梯测试: c=0.05→0.50\r\n");
+    printf("  test_vel   | 速度阶梯测试: v=10→70\r\n");
+    printf("  test_step <v> | 速度阶跃测试\r\n");
+    printf("  test_stop  | 停止当前测试\r\n");
+    printf("  ---------- 例: test_cur 0.1 0.5 0.1 2\r\n");
+    printf("              例: test_step 50\r\n");
     printf("============================================\r\n");
     printf("\r\n");
 }
@@ -128,12 +133,20 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
         g_default_result.parsed = 1;
         printf("  → 目标电流已设为 %.3f A\r\n", value);
     }
-    else if (strcmp(cmd, "s") == 0) {
+        else if (strcmp(cmd, "s") == 0) {
+        // 手动停止时也终止测试
+        if (motor_test_is_running()) {
+            motor_test_stop();
+        }
         g_default_result.stop = 1;
         g_default_result.parsed = 1;
         printf("  → 电机已停止\r\n");
     }
-    else if (strcmp(cmd, "mode") == 0 && n >= 2) {
+        else if (strcmp(cmd, "mode") == 0 && n >= 2) {
+        // 手动切模式时终止测试
+        if (motor_test_is_running()) {
+            motor_test_stop();
+        }
         int mode = (int)value;
         if (mode >= 0 && mode <= 2) {
             g_default_result.control_mode = (ctrl_mode_t)mode;
@@ -193,6 +206,39 @@ uint8_t serial_cmd_process(serial_cmd_result_t *result)
             }
         }
         g_default_result.parsed = 1;
+    }
+        // ====== 测试命令 ======
+    else if (strcmp(cmd, "test_cur") == 0) {
+        float s = 0.05f, e = 0.50f, sp = 0.05f, st = 3.0f;
+        int n4 = sscanf((char *)data, "%*s %f %f %f %f", &s, &e, &sp, &st);
+        if (n4 >= 2) {
+            // 用户提供了至少 start 和 end
+            motor_test_current_ramp(s, e, sp, st);
+        } else {
+            // 默认参数: 0.05 → 0.50, step 0.05, 每档3秒
+            motor_test_current_ramp(0.05f, 0.50f, 0.05f, 3.0f);
+        }
+        g_default_result.parsed = 0;  // 测试函数自己处理，不让主循环覆盖
+    }
+    else if (strcmp(cmd, "test_vel") == 0) {
+        float s = 10.0f, e = 75.0f, sp = 10.0f, st = 5.0f;
+        int n4 = sscanf((char *)data, "%*s %f %f %f %f", &s, &e, &sp, &st);
+        if (n4 >= 2) {
+            motor_test_velocity_ramp(s, e, sp, st);
+        } else {
+            motor_test_velocity_ramp(10.0f, 70.0f, 10.0f, 5.0f);
+        }
+        g_default_result.parsed = 0;
+    }
+    else if (strcmp(cmd, "test_step") == 0 && n3 >= 2) {
+        float target;
+        sscanf((char *)data, "%*s %f", &target);
+        motor_test_step_response(target);
+        g_default_result.parsed = 0;
+    }
+    else if (strcmp(cmd, "test_stop") == 0) {
+        motor_test_stop();
+        g_default_result.parsed = 0;
     }
     else if (strlen((char *)data) > 0) {
         printf("  → 未知命令，输入 help 查看帮助\r\n");
