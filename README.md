@@ -39,6 +39,7 @@
   - [12.3 速度环加速度前馈](#123-速度环加速度前馈)
   - [12.4 位置环及速度前馈](#124-位置环及速度前馈)
   - [12.5 开发板性能测试](#125-开发板性能测试)
+  - [12.6 双速率级联控制（电流环 20kHz + 速度环 1kHz）](#126-双速率级联控制电流环-20khz--速度环-1khz)
 
 ---
 
@@ -1093,6 +1094,222 @@ void test_loop_jitter(void) {
 | I2C 读取慢 | 改用 SPI 编码器，或硬件 I2C 中断 |
 | PID 计算慢 | 预计算 sin/cos 查找表，查表替代计算 |
 | 打印开销大 | 降低打印频率，用 DMA 传输 |
+
+---
+
+### 12.6 双速率级联控制（电流环 20kHz + 速度环 1kHz）
+
+**目标：** 将当前的单速率级联控制（双环 1kHz）拆分为双速率架构：电流环运行在 20kHz 定时器中断中，速度环保留在 1kHz 主循环中。
+
+#### 为什么需要双速率
+
+| 环 | 当前频率 | 目标频率 | 原因 |
+|----|---------|---------|------|
+| 电流环 | 1 kHz | **20 kHz** | 电流变化快（电时间常数 ~ms），高频控制可减小电流纹波、提高响应速度 |
+| 速度环 | 1 kHz | **1 kHz** | 速度变化慢（机械时间常数 ~100ms），1kHz 足够 |
+
+电流环提到 20kHz 的好处：
+- 电流纹波更小，电机运行更平稳
+- 电流环响应更快，抵抗反电动势干扰能力更强
+- 速度环输出的目标电流能被更快跟踪
+
+#### 实现方案
+
+**架构变化：**
+
+```
+优化前（当前）                   优化后
+┌──────────────────┐            ┌─────────────────────┐
+│  main loop 1kHz  │            │  main loop 1kHz      │
+│  ├ 串口命令       │            │  ├ 串口命令           │
+│  ├ 速度 PID       │            │  ├ 速度 PID → 写共享目标电流 │
+│  ├ 电流 PID       │            │  ├ motor_test_tick()   │
+│  ├ SVPWM          │            │  ├ VOFA+ 打印          │
+│  ├ motor_test     │            │  └ vTaskDelay(1ms)     │
+│  └ VOFA+ 打印      │            │                        │
+│  vTaskDelay(1ms)  │            │  ┌─── TIMER IRQ 20kHz ──┤
+└──────────────────┘            │  │  ├ 读 ADC → Ia,Ib    │
+                                 │  │  ├ 读编码器 → 电角度  │
+                                 │  │  ├ Clarke+Park → Iq  │
+                                 │  │  ├ 电流 PID → Uq     │
+                                 │  │  └ SVPWM 输出         │
+                                 └──┴─────────────────────┘
+```
+
+**关键改动：**
+
+1. **新增一个定时器中断**（20kHz = 50µs 周期），使用 `esp_timer` 或硬件定时器
+2. **电流环移至中断**：ADC 采样 → Clarke+Park → 电流 PID → SVPWM 输出，全部在中断内完成
+3. **速度环留在主循环**：读编码器 → 算速度 → 速度 PID → 把结果写入**共享变量** `s_current_target`
+4. **共享变量保护**：`s_current_target`（速度环输出→电流环输入）用 `volatile` 声明，无需互斥锁（单字节写是原子的）
+
+```c
+// motor_control.c 改动示意
+
+// 共享变量（速度环写入，电流环读取）
+static volatile float s_shared_current_target = 0;
+static volatile float s_shared_elec_angle = 0;
+
+// 20kHz 定时器中断 → 电流环
+void IRAM_ATTR current_loop_isr(void *arg) {
+    // ① 读 ADC
+    float Ia = current_sense_read_a();
+    float Ib = current_sense_read_b();
+    
+    // ② 读编码器角度（电流环需要最新角度做 Park）
+    float mech = as5600_read_angle();
+    float elec = mech * SENSOR_DIR * MOTOR_PP - s_zero_angle;
+    elec = fmodf(elec, 2 * PI);
+    if (elec < 0) elec += 2 * PI;
+    s_shared_elec_angle = elec;
+    
+    // ③ Clarke + Park → Iq
+    float Iq = foc_calc_iq(Ia, Ib, elec);
+    
+    // ④ 电流 PID（目标从共享变量读取）
+    float Uq = pid_calculate(&s_pid_current, s_shared_current_target - Iq);
+    
+    // ⑤ SVPWM 输出
+    foc_set_voltage(Uq, elec);
+}
+
+// 1kHz 主循环 → 速度环
+void motor_control_run(void) {
+    float mech = as5600_read_angle();
+    float vel = foc_calc_velocity(mech);
+    
+    if (s_ctrl_mode == CTRL_MODE_VELOCITY) {
+        // 速度 PID → 写入共享目标电流
+        float target = pid_calculate(&s_pid_velocity, s_target_vel - vel);
+        s_shared_current_target = target;
+    }
+    
+    motor_test_tick();
+}
+```
+
+**注意事项：**
+
+| 问题 | 解决方案 |
+|------|----------|
+| AS5600 I2C 在中断中调用？ | I2C 通信耗时 ~200µs，20kHz（50µs）中断内不可行。**编码器读取仍需放在主循环**，电流环使用上一次的角度 |
+| 角度滞后补偿 | 20kHz 中断可预测角度变化：`θ(t+Δt) = θ(t) + ω·Δt`，用预测角度做 Park 变换 |
+| 中断不要调用 printf | VOFA+ 打印只能在主循环做，电流环 ISR 只做计算和输出 |
+| 中断执行时间 | 20kHz 周期 50µs，电流环必须在此时间内完成。ESP32 @ 160MHz 实测 ADC+Clarke+Park+PID+SVPWM 约 15~25µs，**能跑** |
+
+#### 性能测试方法
+
+改造完成后，需要测量的关键指标：
+
+##### 1. 电流环 ISR 执行时间
+
+```c
+// 在 ISR 头尾翻转 GPIO，用逻辑分析仪抓
+void IRAM_ATTR current_loop_isr(void *arg) {
+    gpio_set_level(26, 1);  // 拉高 → 开始
+    // ... 电流环代码 ...
+    gpio_set_level(26, 0);  // 拉低 → 结束
+}
+```
+
+用逻辑分析仪（Saleae）抓 GPIO 26，测量脉冲宽度：
+
+| 指标 | 合格线 | 理想值 |
+|------|--------|--------|
+| 最大执行时间 | < **45 µs**（留 5µs 余量） | < 30 µs |
+| 最小执行时间 | — | 15 µs |
+| 抖动（max-min）| < 10 µs | < 5 µs |
+
+如果最大值超过 45µs，说明 20kHz 跑不满，需要优化（或降频到 10kHz）。
+
+##### 2. 死区时间（Dead Time）
+
+**定义：** 速度环更新 `s_shared_current_target` 之后，到电流环使用这个新值的延迟。
+
+```
+主循环（1kHz）            死区时间
+  │ 更新 target ──┐       ┌──── max 1ms（最坏情况）
+  ▼               │       │
+时间              ├───────┤
+  ▲               │       │
+  │ 电流环读取 target ◄────┘
+ISR（20kHz）       │
+                   └── 最多等待 1 个主循环周期
+```
+
+| 指标 | 最坏情况 | 典型值 | 影响 |
+|------|---------|--------|------|
+| 死区时间 | ~1 ms | ~500 µs | 电流环使用过时的目标值，但 1ms 对于机械系统几乎无感 |
+
+**要不要测？** 可以测但不必优先关注。原因：
+- 速度环输出变化率 ≈ 电流环限幅(1.0A) / 斜坡(500A/s) ≈ 2ms 才能变化 1A
+- 死区 1ms 内目标变化量 = 1A × (1ms/2ms) = 0.5A（极端情况）
+- 电流环本身有反馈，偏差会被立刻修正
+- **结论：死区时间不是瓶颈，在电流环 20kHz 面前可以忽略**
+
+##### 3. VOFA+ 输出频率
+
+电流环数据每 200 次（20kHz / 200 = 100Hz）在 ISR 中缓存一次，主循环统一打印：
+
+```c
+static volatile float s_vofa_buf[8];  // ISR 写入
+static uint32_t s_vofa_count = 0;
+
+void IRAM_ATTR current_loop_isr(void *arg) {
+    // ... 电流环 ...
+    if (++s_vofa_count % 200 == 0) {
+        s_vofa_buf[0] = s_vel;      // 注意：速度在主循环更新，读 volatile
+        s_vofa_buf[1] = s_target_vel;
+        s_vofa_buf[2] = Iq;
+        s_vofa_buf[3] = Uq;
+        s_vofa_buf[4] = elec_angle;
+        s_vofa_buf[5] = Ia;
+        s_vofa_buf[6] = Ib;
+        s_vofa_buf[7] = s_shared_current_target;
+    }
+}
+
+// 主循环打印
+void motor_control_run(void) {
+    if (!motor_test_vofa_suppressed()) {
+        printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
+               s_vofa_buf[0], s_vofa_buf[1], s_vofa_buf[2], s_vofa_buf[3],
+               s_vofa_buf[4], s_vofa_buf[5], s_vofa_buf[6], s_vofa_buf[7]);
+    }
+    // ... 速度环 ...
+}
+```
+
+##### 4. 性能对比验证
+
+改造前后用同一组测试对比：
+
+| 测试 | 改前（1kHz 单速率） | 改后（20kHz+1kHz） | 期待改善 |
+|------|-------------------|-------------------|---------|
+| `test_step 50` 阶跃响应 | 超调量、调节时间 | 同条件重测 | 上升时间缩短，超调减小 |
+| `test_cur` 电流阶梯 | 追踪误差 | 同条件重测 | 电流纹波更小，误差更稳定 |
+| `test_vel` 速度阶梯 | 稳态精度 | 同条件重测 | 高速段误差可能改善 |
+| 手捏电机（抗扰动） | 速度跌落/恢复时间 | 同条件重测 | 恢复更快 |
+
+#### 预期效果
+
+| 指标 | 改前（1kHz） | 改后（20kHz+1kHz） |
+|------|------------|-------------------|
+| 电流纹波 | 较大（ZOH 效应） | 显著减小 |
+| 电流环响应速度 | 1kHz 更新 | 20kHz 更新，快 20 倍 |
+| 电机噪音 | 可能听到 1kHz 啸叫 | 20kHz 超出人耳范围 |
+| 角度滞后 | 无（同频计算） | 需预测补偿 |
+| CPU 占用率 | ~15% | ~40~60%（需实测） |
+| 代码复杂度 | 简单 | 中等（中断+共享变量） |
+
+#### 风险与应对
+
+| 风险 | 概率 | 应对 |
+|------|------|------|
+| ISR 执行超时，看门狗复位 | 中 | 先设 10kHz（100µs），逐级提升；开启 ISR 内超时检测 |
+| I2C 在中断中卡死 | 高 | **绝不在 ISR 内调用 I2C**，编码器角度放主循环，电流环用预测角度 |
+| 角度预测不准导致电流失控 | 低 | 预测仅用于 Park 变换，偏差由电流 PID 补偿；速度越高预测越准 |
+| 串口打印乱码 | 低 | printf 放主循环，ISR 只写缓冲区 |
 
 ---
 
